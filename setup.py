@@ -79,7 +79,8 @@ __keywords__ = [
 ]
 
 __requires__ = [
-]
+    'pymp4'
+    ]
 
 __extra_requires__ = {
     'doc':   ['sphinx'],
