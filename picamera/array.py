@@ -434,7 +434,7 @@ class PiBayerArray(PiArrayOutput):
         # values packed into the <n>th byte.
         data = data.astype(np.uint16) << B
         for byte in range(N):
-            data[:, byte::n] |= ((data[:, N::n] >> (byte * B)) & BS)
+            data[:, byte::n] |= ((data[:, N::n] >> ((byte + 1) * B)) & BS)
         unpacked_array = np.zeros(
             (data.shape[0], data.shape[1] * N // n), dtype=np.uint16)
         for i in range(N):
