@@ -1,3 +1,4 @@
+
 from __future__ import (
     unicode_literals,
     absolute_import,
@@ -11,6 +12,7 @@ import time
 import picamera
 import numpy as np
 from numpy.lib.stride_tricks import as_strided
+import struct
 
 stream = io.BytesIO()
 with picamera.PiCamera() as camera:
@@ -34,6 +36,16 @@ offset = {
     }[ver]
 data = stream.getvalue()[-offset:]
 assert data[:4] == b'BRCM'
+# extract brcm_raw_header , ref to https://github.com/6by9/dcraw/blob/master/dcraw.c#L6463
+BRCM_FORMAT_BAYER = 33
+BRCM_BAYER_RAW8 = 2
+BRCM_BAYER_RAW10 = 3
+BRCM_BAYER_RAW12 = 4
+BRCM_BAYER_RAW14 = 5
+BRCM_BAYER_RAW16 = 6
+
+name,width,height,padding_right,padding_down,*dummy,transform,format,bayer_order,bayer_format = struct.unpack_from('<32s4H6l2H2b', data, 0xB0)
+
 data = data[32768:]
 data = np.frombuffer(data, dtype=np.uint8)
 
@@ -86,45 +98,79 @@ def _unpack_data(data, b, n):
     for i in range(N):
         unpacked_array[:, i::N] = data[:, i::n]
     return unpacked_array
-    
-if ver != 3:
-    data = _unpack_data(data, 10, 5)
-else: # self.camera.revision.upper() == "IMX477"
-    data = _unpack_data(data, 12, 3)
 
-# Now to split the data up into its red, green, and blue components. The
-# Bayer pattern of the OV5647 sensor is BGGR. In other words the first
-# row contains alternating green/blue elements, the second row contains
-# alternating red/green elements, and so on as illustrated below:
-#
-# GBGBGBGBGBGBGB
-# RGRGRGRGRGRGRG
-# GBGBGBGBGBGBGB
-# RGRGRGRGRGRGRG
-#
-# Please note that if you use vflip or hflip to change the orientation
-# of the capture, you must flip the Bayer pattern accordingly
+if (format == BRCM_FORMAT_BAYER):
+    if bayer_format == BRCM_BAYER_RAW10:
+        data = _unpack_data(data, 10, 5)
+    elif bayer_format == BRCM_BAYER_RAW12:
+        data = _unpack_data(data, 12, 3)
 
-rgb = np.zeros(data.shape + (3,), dtype=data.dtype)
-rgb[1::2, 0::2, 0] = data[1::2, 0::2] # Red
-rgb[0::2, 0::2, 1] = data[0::2, 0::2] # Green
-rgb[1::2, 1::2, 1] = data[1::2, 1::2] # Green
-rgb[0::2, 1::2, 2] = data[0::2, 1::2] # Blue
+if bayer_order == 1: #GBRG
+    # Now to split the data up into its red, green, and blue components. The
+    # Bayer pattern of the OV5647 sensor is BGGR. In other words the first
+    # row contains alternating green/blue elements, the second row contains
+    # alternating red/green elements, and so on as illustrated below:
+    #
+    # GBGBGBGBGBGBGB
+    # RGRGRGRGRGRGRG
+    # GBGBGBGBGBGBGB
+    # RGRGRGRGRGRGRG
+    #
+    # Please note that if you use vflip or hflip to change the orientation
+    # of the capture, you must flip the Bayer pattern accordingly
 
-# At this point we now have the raw Bayer data with the correct values
-# and colors but the data still requires de-mosaicing and
-# post-processing. If you wish to do this yourself, end the script here!
-#
-# Below we present a fairly naive de-mosaic method that simply
-# calculates the weighted average of a pixel based on the pixels
-# surrounding it. The weighting is provided by a byte representation of
-# the Bayer filter which we construct first:
+    rgb = np.zeros(data.shape + (3,), dtype=data.dtype)
+    rgb[1::2, 0::2, 0] = data[1::2, 0::2] # Red
+    rgb[0::2, 0::2, 1] = data[0::2, 0::2] # Green
+    rgb[1::2, 1::2, 1] = data[1::2, 1::2] # Green
+    rgb[0::2, 1::2, 2] = data[0::2, 1::2] # Blue
 
-bayer = np.zeros(rgb.shape, dtype=np.uint8)
-bayer[1::2, 0::2, 0] = 1 # Red
-bayer[0::2, 0::2, 1] = 1 # Green
-bayer[1::2, 1::2, 1] = 1 # Green
-bayer[0::2, 1::2, 2] = 1 # Blue
+    # At this point we now have the raw Bayer data with the correct values
+    # and colors but the data still requires de-mosaicing and
+    # post-processing. If you wish to do this yourself, end the script here!
+    #
+    # Below we present a fairly naive de-mosaic method that simply
+    # calculates the weighted average of a pixel based on the pixels
+    # surrounding it. The weighting is provided by a byte representation of
+    # the Bayer filter which we construct first:
+
+    bayer = np.zeros(rgb.shape, dtype=np.uint8)
+    bayer[1::2, 0::2, 0] = 1 # Red
+    bayer[0::2, 0::2, 1] = 1 # Green
+    bayer[1::2, 1::2, 1] = 1 # Green
+    bayer[0::2, 1::2, 2] = 1 # Blue
+elif bayer_order == 2: #BGGR
+    #
+    # BGBGBGBGBGBGBG
+    # GRGRGRGRGRGRGR
+    # BGBGBGBGBGBGBG
+    # GRGRGRGRGRGRGR
+    #
+    # Please note that if you use vflip or hflip to change the orientation
+    # of the capture, you must flip the Bayer pattern accordingly
+
+    rgb = np.zeros(data.shape + (3,), dtype=data.dtype)
+    rgb[1::2, 1::2, 0] = data[1::2, 1::2] # Red
+    rgb[0::2, 1::2, 1] = data[0::2, 1::2] # Green
+    rgb[1::2, 0::2, 1] = data[1::2, 0::2] # Green
+    rgb[0::2, 0::2, 2] = data[0::2, 0::2] # Blue
+
+    # At this point we now have the raw Bayer data with the correct values
+    # and colors but the data still requires de-mosaicing and
+    # post-processing. If you wish to do this yourself, end the script here!
+    #
+    # Below we present a fairly naive de-mosaic method that simply
+    # calculates the weighted average of a pixel based on the pixels
+    # surrounding it. The weighting is provided by a byte representation of
+    # the Bayer filter which we construct first:
+
+    bayer = np.zeros(rgb.shape, dtype=np.uint8)
+    bayer[1::2, 1::2, 0] = 1 # Red
+    bayer[0::2, 1::2, 1] = 1 # Green
+    bayer[1::2, 0::2, 1] = 1 # Green
+    bayer[0::2, 0::2, 2] = 1 # Blue
+else:
+    raise Exception('unknow bayer format!')
 
 # Allocate an array to hold our output with the same shape as the input
 # data. After this we define the size of window that will be used to
